@@ -6,19 +6,19 @@ metadata:
 spec:
   entrypoint: ci-pipeline
   serviceAccountName: argo-sa
-
   templates:
-
   - name: ci-pipeline
     dag:
       tasks:
-
       - name: build-image
         template: kaniko-build
-
       - name: sync-argocd
         template: argocd-sync
         dependencies: [build-image]
+      # --- 新增：重启步骤 ---
+      - name: restart-app
+        template: kubectl-restart
+        dependencies: [sync-argocd]
 
   - name: kaniko-build
     container:
@@ -27,23 +27,26 @@ spec:
         - "--dockerfile=Dockerfile"
         - "--context=git://github.com/zi-fei-yu-2020/fastapi-argo-demo.git"
         - "--destination=zifeiyu2020/fastapi-demo:latest"
+        - "--destination=zifeiyu2020/fastapi-demo:{{workflow.name}}"
         - "--skip-tls-verify"
       volumeMounts:
         - name: docker-config
           mountPath: /kaniko/.docker
-
     volumes:
       - name: docker-config
         secret:
           secretName: dockerhub-secret
+          items:
+            - key: .dockerconfigjson
+              path: config.json
 
   - name: argocd-sync
     container:
-      image: argoproj/argocd-cli:v2.6.7
+      image: quay.io/argoproj/argocd:v2.10.4
       command: [sh, -c]
       args:
         - |
-          argocd login argo-server.argo.svc.cluster.local:443 \
+          argocd login argocd-server.argocd.svc.cluster.local:443 \
           --username admin \
           --password $ARGOCD_PASSWORD \
           --insecure
@@ -54,3 +57,13 @@ spec:
             secretKeyRef:
               name: argocd-secret
               key: password
+
+  # --- 新增：执行重启的模板 ---
+  - name: kubectl-restart
+    container:
+      image: bitnami/kubectl:latest
+      command: [sh, -c]
+      args:
+        - |
+          # 强制重启 default 命名空间下的 deployment
+          kubectl rollout restart deployment fastapi-demo -n default
